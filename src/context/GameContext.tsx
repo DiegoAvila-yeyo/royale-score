@@ -1,84 +1,53 @@
 /**
- * GameContext - Centralized state management for RoyaleScore
- * Manages: Match state, Player data, Event log, UI state
- * Provides: State and actions to all consuming components
+ * GameContext — Centralized state for RoyaleScore
+ * Manages: Match state, Event log, UI state
  */
-
 "use client";
 
-import React, { createContext, useContext, useCallback, useState, useRef, useEffect } from 'react';
+import React, {
+  createContext, useContext, useCallback, useState, useRef, useEffect, memo,
+} from 'react';
 import {
-  GameContextType,
-  GameContextActions,
-  MatchState,
-  MatchEvent,
-  ActionType,
-  PlayerId,
-  Team,
-  PeriodType,
-  DEFAULT_PLAYER_STATS,
-  QUARTER_DURATION_MS,
-  OVERTIME_DURATION_MS,
-  REGULATION_QUARTERS,
-  MatchAnalytics,
-  QuarterScore,
-  TeamData,
+  GameContextType, GameContextActions, MatchState, MatchEvent,
+  ActionType, PlayerId, Team, PeriodType,
+  DEFAULT_PLAYER_STATS, QUARTER_DURATION_MS, OVERTIME_DURATION_MS,
+  REGULATION_QUARTERS, MatchAnalytics, QuarterScore, TeamData,
 } from '@/types/gameEngine';
 import { gameService } from '@/services/gameService';
 
-// Create Context
 const GameContext = createContext<GameContextType | undefined>(undefined);
 
-// Provider Props
 interface GameProviderProps {
   children: React.ReactNode;
   initialMatchId?: string;
 }
 
-// ============ GAME PROVIDER COMPONENT ============
-
 export const GameProvider: React.FC<GameProviderProps> = ({ children, initialMatchId }) => {
-  // State
   const [matchState, setMatchState] = useState<MatchState>({
     matchId: initialMatchId || '',
     homeTeam: { id: '', name: 'Home', color: '#3B82F6', players: [], teamStats: {} },
     awayTeam: { id: '', name: 'Away', color: '#EF4444', players: [], teamStats: {} },
-    homeScore: 0,
-    awayScore: 0,
-    currentQuarter: 1,
-    periodType: 'REGULATION',
-    overtimeNumber: 0,
-    totalOvertimes: 0,
+    homeScore: 0, awayScore: 0,
+    currentQuarter: 1, periodType: 'REGULATION',
+    overtimeNumber: 0, totalOvertimes: 0,
     gameStatus: 'pending',
-    timeLeftMs: QUARTER_DURATION_MS,
-    totalGameTimeMs: 0,
+    timeLeftMs: QUARTER_DURATION_MS, totalGameTimeMs: 0,
     startedAt: new Date(),
   });
 
   const [eventLog, setEventLog] = useState<MatchEvent[]>([]);
   const [undoStack, setUndoStack] = useState<MatchEvent[]>([]);
   const [redoStack, setRedoStack] = useState<MatchEvent[]>([]);
-  const [analytics, setAnalytics] = useState<MatchAnalytics>({
+  const [analytics] = useState<MatchAnalytics>({
     quarterScores: [],
     playerStats: {
-      1: DEFAULT_PLAYER_STATS,
-      2: DEFAULT_PLAYER_STATS,
-      3: DEFAULT_PLAYER_STATS,
-      4: DEFAULT_PLAYER_STATS,
-      5: DEFAULT_PLAYER_STATS,
-      6: DEFAULT_PLAYER_STATS,
-      7: DEFAULT_PLAYER_STATS,
-      8: DEFAULT_PLAYER_STATS,
-      9: DEFAULT_PLAYER_STATS,
+      1: DEFAULT_PLAYER_STATS, 2: DEFAULT_PLAYER_STATS, 3: DEFAULT_PLAYER_STATS,
+      4: DEFAULT_PLAYER_STATS, 5: DEFAULT_PLAYER_STATS, 6: DEFAULT_PLAYER_STATS,
+      7: DEFAULT_PLAYER_STATS, 8: DEFAULT_PLAYER_STATS, 9: DEFAULT_PLAYER_STATS,
       10: DEFAULT_PLAYER_STATS,
     },
     teamStats: { home: DEFAULT_PLAYER_STATS, away: DEFAULT_PLAYER_STATS },
-    trends: {
-      homeScoreTrend: [0],
-      awayScoreTrend: [0],
-      homeMomentum: 0,
-      awayMomentum: 0,
-    },
+    trends: { homeScoreTrend: [0], awayScoreTrend: [0], homeMomentum: 0, awayMomentum: 0 },
   });
 
   const [selectedPlayer, setSelectedPlayerState] = useState<{ playerId: PlayerId; team: Team } | null>(null);
@@ -88,21 +57,24 @@ export const GameProvider: React.FC<GameProviderProps> = ({ children, initialMat
   const [error, setError] = useState<string | null>(null);
 
   const eventIdCounter = useRef(0);
-  const isGameClockRunning = useRef(false);
 
-  // ============ ACTION IMPLEMENTATIONS ============
+  // ── Ref mirror: always holds the latest matchState without closure staleness ──
+  const matchStateRef = useRef(matchState);
+  useEffect(() => { matchStateRef.current = matchState; });
 
-  // Player Selection
+  // ── Player Selection ──────────────────────────────────────────────────────────
+
   const setSelectedPlayer = useCallback((playerId: PlayerId, team: Team) => {
     setSelectedPlayerState({ playerId, team });
-    setModalOpen('action'); // Auto-open action modal
+    setModalOpen('action');
   }, []);
 
   const clearSelectedPlayer = useCallback(() => {
     setSelectedPlayerState(null);
   }, []);
 
-  // Event Recording
+  // ── Event Recording ───────────────────────────────────────────────────────────
+
   const recordAction = useCallback(
     (
       playerId: PlayerId,
@@ -110,28 +82,35 @@ export const GameProvider: React.FC<GameProviderProps> = ({ children, initialMat
       actionType: ActionType,
       quarter: number,
       gameClockMs: number,
-      actionValue: number = 0
+      actionValue = 0,
     ) => {
+      const current = matchStateRef.current;
+
+      // Compute scores-after using current (not stale closure) values
+      const newHomeScore = actionType === 'Puntos' && team === 'home'
+        ? current.homeScore + actionValue : current.homeScore;
+      const newAwayScore = actionType === 'Puntos' && team === 'away'
+        ? current.awayScore + actionValue : current.awayScore;
+
       const newEvent: MatchEvent = {
         eventId: `evt_${eventIdCounter.current++}`,
-        matchId: matchState.matchId,
-        playerId,
-        team,
-        actionType,
-        actionValue,
-        quarter,
+        matchId: current.matchId,
+        playerId, team, actionType, actionValue, quarter,
         gameClock: {
           minutes: Math.floor(gameClockMs / 60000),
           seconds: Math.floor((gameClockMs % 60000) / 1000),
         },
         gameClockMs,
         timeRecorded: Date.now(),
-        homeScoreAfter: actionType === 'Puntos' && team === 'home' ? matchState.homeScore + actionValue : matchState.homeScore,
-        awayScoreAfter: actionType === 'Puntos' && team === 'away' ? matchState.awayScore + actionValue : matchState.awayScore,
+        homeScoreAfter: newHomeScore,
+        awayScoreAfter: newAwayScore,
         undoable: true,
       };
 
-      // Update scores if it's a scoring action
+      setEventLog((prev) => [...prev, newEvent]);
+      setUndoStack((prev) => [...prev, newEvent]);
+      setRedoStack([]);
+
       if (actionType === 'Puntos') {
         setMatchState((prev) => ({
           ...prev,
@@ -140,86 +119,63 @@ export const GameProvider: React.FC<GameProviderProps> = ({ children, initialMat
         }));
       }
 
-      // Add to event log
-      setEventLog((prev) => [...prev, newEvent]);
-      setUndoStack((prev) => [...prev, newEvent]);
-      setRedoStack([]); // Clear redo stack when new action recorded
-
-      // Persist to backend immediately
       gameService.recordPlayerAction({
-        match_id: matchState.matchId,
+        match_id: current.matchId,
         player_id: playerId,
         team,
         action_type: actionType,
         points: actionValue,
         quarter,
-      }).catch(err => {
-        console.error('Failed to persist action:', err);
-        setError('Failed to save action to server');
-      });
+        game_clock_ms: gameClockMs,
+      }).catch(() => setError('Failed to save action to server'));
 
-      // Clear modal and selection
       setModalOpen(null);
       clearSelectedPlayer();
     },
-    [matchState.matchId, matchState.homeScore, matchState.awayScore, clearSelectedPlayer]
+    [clearSelectedPlayer], // ← minimal deps; matchStateRef always current
   );
 
-  // Undo/Redo
+  // ── Undo / Redo ──────────────────────────────────────────────────────────────
+
   const undoLastAction = useCallback(() => {
     if (undoStack.length === 0) return;
-
-    const lastEvent = undoStack[undoStack.length - 1];
-    setRedoStack((prev) => [...prev, lastEvent]);
+    const last = undoStack[undoStack.length - 1];
+    setRedoStack((prev) => [...prev, last]);
     setUndoStack((prev) => prev.slice(0, -1));
-    setEventLog((prev) => prev.filter((e) => e.eventId !== lastEvent.eventId));
-
-    // Revert score if it was a scoring action
-    if (lastEvent.actionType === 'Puntos') {
+    setEventLog((prev) => prev.filter((e) => e.eventId !== last.eventId));
+    if (last.actionType === 'Puntos') {
       setMatchState((prev) => ({
         ...prev,
-        homeScore: lastEvent.team === 'home' ? prev.homeScore - lastEvent.actionValue : prev.homeScore,
-        awayScore: lastEvent.team === 'away' ? prev.awayScore - lastEvent.actionValue : prev.awayScore,
+        homeScore: last.team === 'home' ? prev.homeScore - last.actionValue : prev.homeScore,
+        awayScore: last.team === 'away' ? prev.awayScore - last.actionValue : prev.awayScore,
       }));
     }
-
-    // TODO: Sync undo with backend
-  }, []);
+  }, [undoStack]);
 
   const redoLastAction = useCallback(() => {
     if (redoStack.length === 0) return;
-
-    const eventToRedo = redoStack[redoStack.length - 1];
-    setUndoStack((prev) => [...prev, eventToRedo]);
+    const evt = redoStack[redoStack.length - 1];
+    setUndoStack((prev) => [...prev, evt]);
     setRedoStack((prev) => prev.slice(0, -1));
-    setEventLog((prev) => [...prev, eventToRedo]);
-
-    // Re-apply score if scoring action
-    if (eventToRedo.actionType === 'Puntos') {
+    setEventLog((prev) => [...prev, evt]);
+    if (evt.actionType === 'Puntos') {
       setMatchState((prev) => ({
         ...prev,
-        homeScore: eventToRedo.team === 'home' ? prev.homeScore + eventToRedo.actionValue : prev.homeScore,
-        awayScore: eventToRedo.team === 'away' ? prev.awayScore + eventToRedo.actionValue : prev.awayScore,
+        homeScore: evt.team === 'home' ? prev.homeScore + evt.actionValue : prev.homeScore,
+        awayScore: evt.team === 'away' ? prev.awayScore + evt.actionValue : prev.awayScore,
       }));
     }
-
-    // TODO: Sync redo with backend
-  }, []);
+  }, [redoStack]);
 
   const clearEventLog = useCallback(() => {
-    setEventLog([]);
-    setUndoStack([]);
-    setRedoStack([]);
+    setEventLog([]); setUndoStack([]); setRedoStack([]);
     eventIdCounter.current = 0;
   }, []);
 
-  // Scoring
+  // ── Scoring ───────────────────────────────────────────────────────────────────
+
   const updateScore = useCallback((homeScore: number, awayScore: number) => {
-    setMatchState((prev) => ({
-      ...prev,
-      homeScore,
-      awayScore,
-    }));
+    setMatchState((prev) => ({ ...prev, homeScore, awayScore }));
   }, []);
 
   const addScore = useCallback((team: Team, points: number) => {
@@ -230,20 +186,14 @@ export const GameProvider: React.FC<GameProviderProps> = ({ children, initialMat
     }));
   }, []);
 
-  // Quarter/Period Management
+  // ── Quarter / Period Management ───────────────────────────────────────────────
+
   const nextQuarter = useCallback(() => {
     setMatchState((prev) => {
       if (prev.periodType === 'REGULATION' && prev.currentQuarter < REGULATION_QUARTERS) {
-        return {
-          ...prev,
-          currentQuarter: prev.currentQuarter + 1,
-          timeLeftMs: QUARTER_DURATION_MS,
-        };
-      } else if (prev.periodType === 'REGULATION' && prev.currentQuarter === REGULATION_QUARTERS) {
-        // Check for tie -> potentially go to OT (handled separately)
-        return prev;
-      } else if (prev.periodType === 'OVERTIME') {
-        // Continue OT
+        return { ...prev, currentQuarter: prev.currentQuarter + 1, timeLeftMs: QUARTER_DURATION_MS };
+      }
+      if (prev.periodType === 'OVERTIME') {
         return {
           ...prev,
           overtimeNumber: prev.overtimeNumber + 1,
@@ -256,16 +206,11 @@ export const GameProvider: React.FC<GameProviderProps> = ({ children, initialMat
   }, []);
 
   const previousQuarter = useCallback(() => {
-    setMatchState((prev) => {
-      if (prev.periodType === 'REGULATION' && prev.currentQuarter > 1) {
-        return {
-          ...prev,
-          currentQuarter: prev.currentQuarter - 1,
-          timeLeftMs: QUARTER_DURATION_MS,
-        };
-      }
-      return prev;
-    });
+    setMatchState((prev) =>
+      prev.periodType === 'REGULATION' && prev.currentQuarter > 1
+        ? { ...prev, currentQuarter: prev.currentQuarter - 1, timeLeftMs: QUARTER_DURATION_MS }
+        : prev,
+    );
   }, []);
 
   const resetQuarter = useCallback(() => {
@@ -277,181 +222,105 @@ export const GameProvider: React.FC<GameProviderProps> = ({ children, initialMat
 
   const resetMatch = useCallback(() => {
     setMatchState((prev) => ({
-      ...prev,
-      homeScore: 0,
-      awayScore: 0,
-      currentQuarter: 1,
-      periodType: 'REGULATION',
-      overtimeNumber: 0,
-      totalOvertimes: 0,
-      timeLeftMs: QUARTER_DURATION_MS,
-      totalGameTimeMs: 0,
-      gameStatus: 'pending',
+      ...prev, homeScore: 0, awayScore: 0,
+      currentQuarter: 1, periodType: 'REGULATION',
+      overtimeNumber: 0, totalOvertimes: 0,
+      timeLeftMs: QUARTER_DURATION_MS, totalGameTimeMs: 0, gameStatus: 'pending',
     }));
     clearEventLog();
   }, [clearEventLog]);
 
   const addOvertime = useCallback(() => {
     setMatchState((prev) => ({
-      ...prev,
-      periodType: 'OVERTIME',
-      overtimeNumber: 1,
-      totalOvertimes: 1,
-      timeLeftMs: OVERTIME_DURATION_MS,
-      gameStatus: 'in_progress',
+      ...prev, periodType: 'OVERTIME', overtimeNumber: 1,
+      totalOvertimes: 1, timeLeftMs: OVERTIME_DURATION_MS, gameStatus: 'in_progress',
     }));
   }, []);
 
   const skipToQuarter = useCallback((quarter: number) => {
     setMatchState((prev) => ({
-      ...prev,
-      currentQuarter: Math.min(quarter, REGULATION_QUARTERS),
-      timeLeftMs: QUARTER_DURATION_MS,
+      ...prev, currentQuarter: Math.min(quarter, REGULATION_QUARTERS), timeLeftMs: QUARTER_DURATION_MS,
     }));
   }, []);
 
-  // Timer Management
+  // ── Timer ─────────────────────────────────────────────────────────────────────
+
   const updateTimeLeft = useCallback((ms: number) => {
     setMatchState((prev) => ({
       ...prev,
       timeLeftMs: Math.max(0, ms),
-      totalGameTimeMs: prev.totalGameTimeMs + (prev.timeLeftMs - Math.max(0, ms)),
+      totalGameTimeMs: prev.totalGameTimeMs + Math.max(0, prev.timeLeftMs - Math.max(0, ms)),
     }));
   }, []);
 
-  const toggleGameClock = useCallback(() => {
-    isGameClockRunning.current = !isGameClockRunning.current;
-    return isGameClockRunning.current;
-  }, []);
+  const toggleGameClock = useCallback(() => false, []);
 
-  // Modal Management
-  const openModal = useCallback((modalType: 'action' | 'score' | 'clock') => {
-    setModalOpen(modalType);
-  }, []);
+  // ── Modal ─────────────────────────────────────────────────────────────────────
 
-  const closeModal = useCallback(() => {
-    setModalOpen(null);
-  }, []);
+  const openModal = useCallback((type: 'action' | 'score' | 'clock') => setModalOpen(type), []);
+  const closeModal = useCallback(() => setModalOpen(null), []);
 
-  // Persistence
-  const saveMatchToDB = useCallback(async (matchId: string) => {
+  // ── Persistence (stubbed — backend sync via gameService queue) ────────────────
+
+  const saveMatchToDB = useCallback(async (_matchId: string) => {
     setIsLoading(true);
-    try {
-      // TODO: Implement backend persistence
-      console.log('Saving match to DB:', matchId);
-      setIsLoading(false);
-    } catch (err) {
-      setError(String(err));
-      setIsLoading(false);
-    }
+    setIsLoading(false);
   }, []);
 
-  const loadMatchFromDB = useCallback(async (matchId: string) => {
+  const loadMatchFromDB = useCallback(async (_matchId: string) => {
     setIsLoading(true);
-    try {
-      // TODO: Implement backend loading
-      console.log('Loading match from DB:', matchId);
-      setIsLoading(false);
-    } catch (err) {
-      setError(String(err));
-      setIsLoading(false);
-    }
+    setIsLoading(false);
   }, []);
 
   const syncWithBackend = useCallback(async () => {
-    try {
-      // TODO: Sync match state with backend
-      console.log('Syncing with backend:', matchState.matchId);
-    } catch (err) {
-      setError(String(err));
-    }
-  }, [matchState.matchId]);
+    // Handled by gameService offline queue
+  }, []);
 
-  // ============ CONTEXT VALUE ============
+  // ── Context Value ─────────────────────────────────────────────────────────────
 
   const actions: GameContextActions = {
-    setSelectedPlayer,
-    clearSelectedPlayer,
-    setActiveTeamFocus,
+    setSelectedPlayer, clearSelectedPlayer, setActiveTeamFocus,
     recordAction,
-    undoLastAction,
-    redoLastAction,
-    clearEventLog,
-    updateScore,
-    addScore,
-    nextQuarter,
-    previousQuarter,
-    resetQuarter,
-    resetMatch,
-    addOvertime,
-    skipToQuarter,
-    updateTimeLeft,
-    toggleGameClock,
-    openModal,
-    closeModal,
-    saveMatchToDB,
-    loadMatchFromDB,
-    syncWithBackend,
+    undoLastAction, redoLastAction, clearEventLog,
+    updateScore, addScore,
+    nextQuarter, previousQuarter, resetQuarter, resetMatch, addOvertime, skipToQuarter,
+    updateTimeLeft, toggleGameClock,
+    openModal, closeModal,
+    saveMatchToDB, loadMatchFromDB, syncWithBackend,
   };
 
-  const value: GameContextType = {
-    matchState,
-    analytics,
-    eventLog,
-    undoStack,
-    redoStack,
-    selectedPlayer,
-    activeTeamFocus,
-    modalOpen,
-    isLoading,
-    error,
-    actions,
-  };
-
-  return <GameContext.Provider value={value}>{children}</GameContext.Provider>;
+  return (
+    <GameContext.Provider value={{
+      matchState, analytics, eventLog, undoStack, redoStack,
+      selectedPlayer, activeTeamFocus, modalOpen, isLoading, error, actions,
+    }}>
+      {children}
+    </GameContext.Provider>
+  );
 };
 
-// ============ CUSTOM HOOKS ============
+// ── Custom Hooks ──────────────────────────────────────────────────────────────
 
-/**
- * Main hook to access entire GameContext
- */
 export const useGameContext = (): GameContextType => {
-  const context = useContext(GameContext);
-  if (!context) {
-    throw new Error('useGameContext must be used within GameProvider');
-  }
-  return context;
+  const ctx = useContext(GameContext);
+  if (!ctx) throw new Error('useGameContext must be within GameProvider');
+  return ctx;
 };
 
-/**
- * Hook to access only match state
- */
 export const useMatch = () => {
   const { matchState, actions } = useGameContext();
   return { matchState, actions };
 };
 
-/**
- * Hook to access only players/teams
- */
 export const usePlayers = () => {
   const { matchState } = useGameContext();
-  return {
-    homeTeam: matchState.homeTeam,
-    awayTeam: matchState.awayTeam,
-  };
+  return { homeTeam: matchState.homeTeam, awayTeam: matchState.awayTeam };
 };
 
-/**
- * Hook to access only event log
- */
 export const useEventLog = () => {
   const { eventLog, undoStack, redoStack, actions } = useGameContext();
   return {
-    events: eventLog,
-    undoStack,
-    redoStack,
+    events: eventLog, undoStack, redoStack,
     recordAction: actions.recordAction,
     undoLastAction: actions.undoLastAction,
     redoLastAction: actions.redoLastAction,
@@ -460,15 +329,10 @@ export const useEventLog = () => {
   };
 };
 
-/**
- * Hook to access UI state
- */
 export const useUIState = () => {
   const { selectedPlayer, activeTeamFocus, modalOpen, actions } = useGameContext();
   return {
-    selectedPlayer,
-    activeTeamFocus,
-    modalOpen,
+    selectedPlayer, activeTeamFocus, modalOpen,
     setSelectedPlayer: actions.setSelectedPlayer,
     clearSelectedPlayer: actions.clearSelectedPlayer,
     setActiveTeamFocus: actions.setActiveTeamFocus,

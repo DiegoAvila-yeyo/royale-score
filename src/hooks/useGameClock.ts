@@ -1,25 +1,21 @@
 "use client";
-
 /**
- * useGameClock - Enhanced game clock with NBA rules
- * Features:
- * - 12-minute quarters (NBA standard)
- * - 5-minute overtimes
- * - Auto-quarter advancement
- * - Quarter-level time management
+ * useGameClock — NBA quarter clock with LOCAL state optimisation.
+ *
+ * Key design: the 100ms countdown lives entirely in hook-local state.
+ * GameContext.matchState.timeLeftMs is only updated at discrete boundaries
+ * (pause, reset, quarter end), preventing ~600 re-renders per minute.
  */
-
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useGameContext } from '@/context/GameContext';
 import { QUARTER_DURATION_MS, OVERTIME_DURATION_MS } from '@/types/gameEngine';
 
-interface UseGameClockReturn {
+export interface UseGameClockReturn {
   timeLeft: string;
   timeLeftMs: number;
   quarter: number;
   overtimeNumber: number;
   periodType: 'REGULATION' | 'OVERTIME';
-  displayText: string;
   isRunning: boolean;
   isPaused: boolean;
   toggleClock: () => void;
@@ -29,139 +25,131 @@ interface UseGameClockReturn {
   previousQuarter: () => void;
   addOvertime: () => void;
   skipToQuarter: (quarter: number) => void;
+  /** Live ms value — use when recording events for precise timestamps. */
+  getGameClockMs: () => number;
 }
+
+const fmt = (ms: number): string => {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+};
 
 export const useGameClock = (): UseGameClockReturn => {
   const { matchState, actions } = useGameContext();
+
   const [isRunning, setIsRunning] = useState(false);
-  const [isPaused, setIsPaused] = useState(true);
+  // Local display state — ticks without touching GameContext
+  const [localMs, setLocalMs] = useState(matchState.timeLeftMs);
+  const localMsRef = useRef(localMs);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
-  const timeLeftMs = matchState.timeLeftMs;
-  const quarter = matchState.currentQuarter;
-  const overtimeNumber = matchState.overtimeNumber;
-  const periodType = matchState.periodType;
+  // Ref mirror of matchState for use inside intervals (avoids stale closure)
+  const matchStateRef = useRef(matchState);
+  useEffect(() => { matchStateRef.current = matchState; });
 
-  // Format time as MM:SS
-  const formatTime = useCallback((ms: number): string => {
-    const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-    const minutes = Math.floor(totalSeconds / 60);
-    const seconds = totalSeconds % 60;
-    return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-  }, []);
-
-  // Display text (e.g., "12:34 Q3" or "04:12 OT2")
-  const displayText = `${formatTime(timeLeftMs)} ${periodType === 'REGULATION' ? `Q${quarter}` : `OT${overtimeNumber}`}`;
-
-  // Check if time expired and auto-advance
+  // ── Sync local clock FROM context when NOT running ────────────────────────
+  // This fires when resetQuarter / resetMatch / addOvertime updates timeLeftMs.
   useEffect(() => {
-    if (timeLeftMs === 0 && isRunning) {
-      setIsRunning(false);
-      setIsPaused(true);
-
-      // Auto-advance logic
-      if (periodType === 'REGULATION' && quarter < 4) {
-        // Go to next quarter
-        actions.nextQuarter();
-      } else if (periodType === 'REGULATION' && quarter === 4 && matchState.homeScore === matchState.awayScore) {
-        // Tie at end of regulation -> Overtime
-        actions.addOvertime();
-      } else if (periodType === 'OVERTIME') {
-        // Continue to next overtime (will be handled by GameContext)
-        // Manual advancement required if tied
-      }
+    if (!isRunning) {
+      setLocalMs(matchState.timeLeftMs);
+      localMsRef.current = matchState.timeLeftMs;
     }
-  }, [timeLeftMs, isRunning, periodType, quarter, matchState.homeScore, matchState.awayScore, actions]);
+  }, [matchState.timeLeftMs, isRunning]);
 
-  // Game clock ticker
+  // ── 100ms ticker — only updates local state ────────────────────────────────
   useEffect(() => {
-    if (!isRunning || isPaused) {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
+    if (!isRunning) {
+      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
       return;
     }
 
     timerRef.current = setInterval(() => {
-      actions.updateTimeLeft(timeLeftMs - 100); // Decrement by 100ms for smooth countdown
+      const next = Math.max(0, localMsRef.current - 100);
+      localMsRef.current = next;
+      setLocalMs(next);
+
+      if (next === 0) {
+        clearInterval(timerRef.current!);
+        timerRef.current = null;
+        setIsRunning(false);
+
+        // Sync boundary to context
+        actions.updateTimeLeft(0);
+
+        // Auto-advance period
+        const { periodType, currentQuarter, homeScore, awayScore } = matchStateRef.current;
+        if (periodType === 'REGULATION' && currentQuarter < 4) {
+          actions.nextQuarter();
+        } else if (periodType === 'REGULATION' && currentQuarter === 4 && homeScore === awayScore) {
+          actions.addOvertime();
+        }
+      }
     }, 100);
 
     return () => {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-      }
+      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     };
-  }, [isRunning, isPaused, timeLeftMs, actions]);
+  }, [isRunning, actions]);
 
-  // Toggle Clock Start/Pause
+  // ── Controls ───────────────────────────────────────────────────────────────
+
   const toggleClock = useCallback(() => {
-    if (!isRunning) {
-      setIsRunning(true);
-      setIsPaused(false);
-    } else {
-      setIsRunning(false);
-      setIsPaused(true);
-    }
-  }, [isRunning]);
-
-  // Reset Quarter
-  const resetQuarterLocal = useCallback(() => {
-    actions.resetQuarter();
-    setIsRunning(false);
-    setIsPaused(true);
+    setIsRunning((prev) => {
+      if (prev) {
+        // Pause: sync current local time to context
+        actions.updateTimeLeft(localMsRef.current);
+      }
+      return !prev;
+    });
   }, [actions]);
 
-  // Reset Match
-  const resetMatchLocal = useCallback(() => {
+  const resetQuarter = useCallback(() => {
+    setIsRunning(false);
+    actions.resetQuarter(); // updates matchState.timeLeftMs → triggers sync useEffect above
+  }, [actions]);
+
+  const resetMatch = useCallback(() => {
+    setIsRunning(false);
     actions.resetMatch();
-    setIsRunning(false);
-    setIsPaused(true);
   }, [actions]);
 
-  // Next Quarter
-  const nextQuarterLocal = useCallback(() => {
+  const nextQuarter = useCallback(() => {
+    setIsRunning(false);
     actions.nextQuarter();
-    setIsRunning(false);
-    setIsPaused(true);
   }, [actions]);
 
-  // Previous Quarter
-  const previousQuarterLocal = useCallback(() => {
+  const previousQuarter = useCallback(() => {
+    setIsRunning(false);
     actions.previousQuarter();
-    setIsRunning(false);
-    setIsPaused(true);
   }, [actions]);
 
-  // Add Overtime
-  const addOvertimeLocal = useCallback(() => {
+  const addOvertime = useCallback(() => {
+    setIsRunning(false);
     actions.addOvertime();
-    setIsRunning(false);
-    setIsPaused(true);
   }, [actions]);
 
-  // Skip to Quarter
-  const skipToQuarterLocal = useCallback((q: number) => {
-    actions.skipToQuarter(q);
+  const skipToQuarter = useCallback((q: number) => {
     setIsRunning(false);
-    setIsPaused(true);
+    actions.skipToQuarter(q);
   }, [actions]);
 
   return {
-    timeLeft: formatTime(timeLeftMs),
-    timeLeftMs,
-    quarter,
-    overtimeNumber,
-    periodType,
-    displayText,
+    timeLeft: fmt(localMs),
+    timeLeftMs: localMs,
+    quarter: matchState.currentQuarter,
+    overtimeNumber: matchState.overtimeNumber,
+    periodType: matchState.periodType,
     isRunning,
-    isPaused,
+    isPaused: !isRunning,
     toggleClock,
-    resetQuarter: resetQuarterLocal,
-    resetMatch: resetMatchLocal,
-    nextQuarter: nextQuarterLocal,
-    previousQuarter: previousQuarterLocal,
-    addOvertime: addOvertimeLocal,
-    skipToQuarter: skipToQuarterLocal,
+    resetQuarter,
+    resetMatch,
+    nextQuarter,
+    previousQuarter,
+    addOvertime,
+    skipToQuarter,
+    getGameClockMs: () => localMsRef.current,
   };
 };

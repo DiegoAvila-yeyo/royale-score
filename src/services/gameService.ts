@@ -8,6 +8,7 @@ interface PlayerAction {
   action_type: string;
   points?: number;
   quarter: number;
+  game_clock_ms?: number;
 }
 
 interface MatchSnapshot {

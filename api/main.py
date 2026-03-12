@@ -1,58 +1,51 @@
-# api/main.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from app.api.v1 import matches
 from app.database import create_tables
+from app.core.config import get_settings
+from app.core.logging import configure_logging
+
+settings = get_settings()
+configure_logging(debug=settings.debug)
+
+import logging
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="RoyaleScore Backend",
-    description="Basketball scorekeeping and match tracking API",
-    version="1.0.0"
+    title="RoyaleScore API",
+    description="Real-time basketball scorekeeping & analytics",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
 )
 
 
-# Startup event: create database tables
 @app.on_event("startup")
-def startup_event():
-    """Initialize database tables on application startup"""
+def startup_event() -> None:
     create_tables()
-    print("✓ Database tables initialized")
+    logger.info("RoyaleScore API started — database tables ready")
 
-# CORS configuration
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:3001",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Include routers
 app.include_router(matches.router, prefix="/api/v1")
 
-# Root endpoint
-@app.get("/")
-def read_root():
+
+@app.get("/", include_in_schema=False)
+def root():
     return {
         "message": "RoyaleScore API is running",
         "version": "1.0.0",
         "docs": "/docs",
-        "endpoints": {
-            "matches": "/api/v1/matches",
-            "match_detail": "/api/v1/matches/{match_id}",
-            "record_action": "/api/v1/matches/{match_id}/action",
-            "update_score": "/api/v1/matches/{match_id}/score",
-            "match_actions": "/api/v1/matches/{match_id}/actions",
-            "update_status": "/api/v1/matches/{match_id}/status/{status_value}"
-        }
     }
 
-# Health check endpoint
-@app.get("/health")
+
+@app.get("/health", tags=["infra"])
 def health_check():
     return {"status": "ok"}

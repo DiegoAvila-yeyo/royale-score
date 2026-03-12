@@ -1,5 +1,5 @@
 # api/app/models/sqlalchemy_models.py
-from sqlalchemy import Column, String, Integer, Float, DateTime, ForeignKey, Enum, Boolean
+from sqlalchemy import Column, String, Integer, Float, DateTime, ForeignKey, Enum, Boolean, Index
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -73,24 +73,24 @@ class ActionLogModel(Base):
 
     action_id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     match_id = Column(String(36), ForeignKey("matches.match_id"), nullable=False)
-    player_id = Column(String(36), ForeignKey("players.player_id"), nullable=False)
+    # Stored as a composite string (e.g. "7_away") — no FK to players table
+    # because roster players are tracked in frontend state for the MVP.
+    player_ref = Column(String(20), nullable=False)
     team_id = Column(String(36), ForeignKey("teams.team_id"), nullable=False)
-    action_type = Column(String(20), nullable=False)  # FOUL, STEAL, ASSIST, BLOCK, etc
-    action_value = Column(Integer, nullable=True)  # points, etc
+    action_type = Column(String(20), nullable=False)
+    action_value = Column(Integer, nullable=True)
     quarter = Column(Integer, nullable=False)
-    game_clock_ms = Column(Integer, nullable=False)  # milliseconds into quarter
-    home_score = Column(Integer, nullable=False)  # snapshot of home score after action
-    away_score = Column(Integer, nullable=False)  # snapshot of away score after action
+    game_clock_ms = Column(Integer, nullable=False, default=0)
+    home_score = Column(Integer, nullable=False)
+    away_score = Column(Integer, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     # Relationships
     match = relationship("MatchModel", back_populates="action_logs")
-    player = relationship("PlayerModel", back_populates="action_logs")
 
-    # Index for faster queries
     __table_args__ = (
-        # Useful for timeline queries: get all actions in a specific quarter sorted by clock
-        # INDEX('idx_match_quarter', 'match_id', 'quarter', 'game_clock_ms'),
+        # Fast timeline queries: all actions for a match ordered by period + clock
+        Index("idx_action_match_quarter", "match_id", "quarter", "game_clock_ms"),
     )
 
 

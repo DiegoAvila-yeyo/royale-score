@@ -1,50 +1,45 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
-import { useGameContext, useEventLog, useUIState } from '@/context/GameContext';
-import { useGameClock } from '@/hooks/useGameClock';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useUIState } from '@/context/GameContext';
 import { useToast } from '@/hooks/useToast';
+import { GameConsole } from '@/components/organisms/GameConsole';
+import { FooterControls } from '@/components/organisms/FooterControls';
+import { EventLogPanel } from '@/components/organisms/EventLogPanel';
 import UnifiedCourt from '@/features/UnifiedCourt';
 import ActionModal from '@/components/ActionModal';
-import EventLog from '@/components/EventLog';
-import GameClockControls from '@/components/GameClockControls';
 import ToastContainer from '@/components/ToastContainer';
-import { FuturisticButton } from '@/ui/FuturisticButton';
-import { RotateCcw } from 'lucide-react';
+
+const HOME_TEAM = 'LOCAL';
+const AWAY_TEAM = 'VISITANTE';
+
+const ACTION_ICONS: Record<string, string> = {
+  Falta: '🚫', Robo: '🎯', Asist: '🤝', Tapón: '🛡️',
+  Rebound: '📦', Turnover: '💥', Timeout: '⏸️', Puntos: '🏀',
+};
 
 export default function RoyaleScoreMain() {
-  const { matchState, actions } = useGameContext();
-  const { events, canUndo, undoLastAction } = useEventLog();
   const { selectedPlayer } = useUIState();
   const { toasts, addToast, removeToast } = useToast();
   const [modalOpen, setModalOpen] = useState(false);
 
-  const {
-    isRunning,
-    toggleClock,
-    resetQuarter,
-    resetMatch,
-    nextQuarter,
-    addOvertime,
-  } = useGameClock();
-
   // Open action modal when a player is selected
   useEffect(() => {
-    if (selectedPlayer && selectedPlayer.playerId > 0) {
-      setModalOpen(true);
-    }
+    if (selectedPlayer?.playerId) setModalOpen(true);
   }, [selectedPlayer]);
 
-  // Toast handler for scoring buttons
-  const handleAddScore = (team: 'home' | 'away', pts: number) => {
-    actions.addScore(team, pts);
-    const teamLabel = team === 'home' ? matchState.homeTeam.name || 'LOCAL' : matchState.awayTeam.name || 'VISITANTE';
+  const handleScoreToast = useCallback((pts: number, label: string) => {
     const icon = pts === 3 ? '🎯' : pts === 1 ? '🏀' : '⛹️';
-    addToast(`+${pts} • ${teamLabel}`, 'success', icon, 2000);
-  };
+    addToast(`+${pts} · ${label}`, 'success', icon, 1800);
+  }, [addToast]);
 
-  const homeLabel = matchState.homeTeam.name || 'LOCAL';
-  const awayLabel  = matchState.awayTeam.name  || 'VISITANTE';
+  const handleActionToast = useCallback(
+    (label: string, playerNum: number, team: 'home' | 'away') => {
+      const teamLabel = team === 'home' ? HOME_TEAM : AWAY_TEAM;
+      addToast(`#${playerNum} ${label} · ${teamLabel}`, 'info', ACTION_ICONS[label] ?? '📊');
+    },
+    [addToast],
+  );
 
   return (
     <main
@@ -52,115 +47,34 @@ export default function RoyaleScoreMain() {
       style={{ overscrollBehavior: 'none' }}
     >
       {/* ── Unified Scoreboard + Clock Console ── */}
-      <GameClockControls
-        onToggleClock={toggleClock}
-        onResetQuarter={resetQuarter}
-        onResetMatch={resetMatch}
-        onNextQuarter={nextQuarter}
-        onAddOvertime={addOvertime}
-        disableNextQuarter={matchState.currentQuarter >= 4 && matchState.periodType === 'REGULATION'}
-        disableOT={matchState.periodType === 'OVERTIME' || matchState.homeScore !== matchState.awayScore}
-        homeTeam={homeLabel}
-        awayTeam={awayLabel}
-      />
+      <GameConsole homeTeam={HOME_TEAM} awayTeam={AWAY_TEAM} />
 
-      {/* ── Main Content: Court + Event Log ── */}
+      {/* ── Court + Event Log ── */}
       <section className="flex gap-3 md:gap-4 flex-1 min-h-0">
-        {/* Full court visualization */}
         <div className="flex-1 min-w-0">
-          <UnifiedCourt homeTeam={homeLabel} awayTeam={awayLabel} />
+          <UnifiedCourt homeTeam={HOME_TEAM} awayTeam={AWAY_TEAM} />
         </div>
 
-        {/* Event log sidebar */}
         <aside className="w-16 md:w-20 flex flex-col gap-2 overflow-y-auto shrink-0">
-          <EventLog />
-          <button
-            onClick={undoLastAction}
-            disabled={!canUndo}
-            className={`h-10 flex items-center justify-center rounded-lg border transition-all ${
-              canUndo
-                ? 'border-yellow-500/50 text-yellow-400 hover:bg-yellow-500/10'
-                : 'border-white/5 text-neutral-600'
-            }`}
-            title="Deshacer última acción"
-            aria-label="Deshacer"
-          >
-            <RotateCcw size={16} />
-          </button>
+          <EventLogPanel />
         </aside>
       </section>
 
-      {/* ── Footer: Scoring Controls ── */}
-      <footer className="sticky bottom-0 left-0 right-0 bg-neutral-950/95 backdrop-blur-md border-t border-white/10 p-3 md:p-4 z-30">
-        <div className="grid grid-cols-2 gap-3">
-          {/* Home Team Buttons */}
-          <div className="flex flex-col gap-1.5">
-            <h3 className="text-[10px] font-bold text-blue-400 uppercase tracking-wider">
-              🔵 {homeLabel}
-            </h3>
-            <div className="grid grid-cols-4 gap-1.5">
-              {[1, 2, 3].map((pts) => (
-                <FuturisticButton
-                  key={`home-${pts}`}
-                  onClick={() => handleAddScore('home', pts)}
-                  className="h-12 text-base font-black"
-                >
-                  +{pts}
-                </FuturisticButton>
-              ))}
-              <FuturisticButton
-                onClick={() => handleAddScore('home', 4)}
-                variant="neon"
-                className="h-12 text-xs font-black"
-                title="And-1"
-              >
-                +4
-              </FuturisticButton>
-            </div>
-          </div>
-
-          {/* Away Team Buttons */}
-          <div className="flex flex-col gap-1.5">
-            <h3 className="text-[10px] font-bold text-red-400 uppercase tracking-wider text-right">
-              {awayLabel} 🔴
-            </h3>
-            <div className="grid grid-cols-4 gap-1.5">
-              {[1, 2, 3].map((pts) => (
-                <FuturisticButton
-                  key={`away-${pts}`}
-                  onClick={() => handleAddScore('away', pts)}
-                  className="h-12 text-base font-black"
-                  style={{ borderColor: 'rgba(248,113,113,0.35)', color: 'rgb(252,165,165)' }}
-                >
-                  +{pts}
-                </FuturisticButton>
-              ))}
-              <FuturisticButton
-                onClick={() => handleAddScore('away', 4)}
-                variant="neon"
-                className="h-12 text-xs font-black"
-                style={{ borderColor: 'rgba(248,113,113,0.5)' }}
-                title="And-1"
-              >
-                +4
-              </FuturisticButton>
-            </div>
-          </div>
-        </div>
-      </footer>
+      {/* ── Sticky Scoring Footer ── */}
+      <FooterControls
+        homeTeam={HOME_TEAM}
+        awayTeam={AWAY_TEAM}
+        onScoreToast={handleScoreToast}
+      />
 
       {/* ── Action Modal ── */}
       <ActionModal
         isOpen={modalOpen}
         onClose={() => setModalOpen(false)}
-        onActionRecorded={(label, playerNum, team) => {
-          const icon = label === 'Falta' ? '🚫' : label === 'Robo' ? '🎯' : label === 'Tapón' ? '🛡️' : label === 'Asist' ? '🤝' : '��';
-          const teamLabel = team === 'home' ? homeLabel : awayLabel;
-          addToast(`#${playerNum} ${label} · ${teamLabel}`, 'info', icon);
-        }}
+        onActionRecorded={handleActionToast}
       />
 
-      {/* ── Toast Notifications ── */}
+      {/* ── Toast Stack ── */}
       <ToastContainer toasts={toasts} onRemove={removeToast} />
     </main>
   );
